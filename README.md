@@ -17,7 +17,7 @@ GUIKit requires Go 1.23+. Initialize your module and fetch GUIKit alongside its 
 
 ```bash
 go mod init guikit
-go get [github.com/gddisney/ultimate_db](https://github.com/gddisney/ultimate_db)
+go get github.com/gddisney/ultimate_db]
 go mod tidy
 
 ```
