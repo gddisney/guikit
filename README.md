@@ -13,11 +13,13 @@ A high-performance, full-stack Go web framework featuring reactive Live-Componen
 
 ## Installation
 
-GUIKit requires Go 1.23+. Initialize your module and fetch GUIKit alongside its custom database dependency:
+GUIKit requires Go 1.25.10. Initialize your module and fetch GUIKit alongside its custom database dependency:
 
 ```bash
 go mod init guikit
-go get github.com/gddisney/ultimate_db]
+go get github.com/gorilla/websocket
+go get github.com/gddisney/ultimate_db
+go get github.com/gddisney/guikit
 go mod tidy
 
 ```
