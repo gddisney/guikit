@@ -1,4 +1,4 @@
-module guikit
+module github.com/gddisney/guikit
 
 go 1.23
 
