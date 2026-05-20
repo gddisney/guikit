@@ -104,8 +104,10 @@ type GUIKit struct {
 	DB          *ultimate_db.DB
 	BP          *ultimate_db.BufferPool
 	Mux         *http.ServeMux
-	GlobalData  map[string]interface{}
 	SessionPage ultimate_db.PageID
+
+	globalData   map[string]interface{}
+	globalDataMu sync.RWMutex
 
 	components   map[string]LiveComponent
 	componentsMu sync.RWMutex
@@ -152,7 +154,7 @@ func New(dbPath, walPath string) (*GUIKit, error) {
 		DB:            db,
 		BP:            bp,
 		Mux:           http.NewServeMux(),
-		GlobalData:    make(map[string]interface{}),
+		globalData:    make(map[string]interface{}),
 		SessionPage:   0,
 		components:    make(map[string]LiveComponent),
 		clients:       make(map[*ThreadSafeConn]bool),
@@ -168,6 +170,32 @@ func New(dbPath, walPath string) (*GUIKit, error) {
 	gk.Mux.HandleFunc("GET /guikit.js", gk.serveJS)
 
 	return gk, nil
+}
+
+// SetGlobal safely writes to the global state map
+func (gk *GUIKit) SetGlobal(key string, value interface{}) {
+	gk.globalDataMu.Lock()
+	defer gk.globalDataMu.Unlock()
+	gk.globalData[key] = value
+}
+
+// GetGlobal safely reads from the global state map
+func (gk *GUIKit) GetGlobal(key string) (interface{}, bool) {
+	gk.globalDataMu.RLock()
+	defer gk.globalDataMu.RUnlock()
+	val, ok := gk.globalData[key]
+	return val, ok
+}
+
+// GetGlobalMap returns a snapshot of the global state for rendering
+func (gk *GUIKit) GetGlobalMap() map[string]interface{} {
+	gk.globalDataMu.RLock()
+	defer gk.globalDataMu.RUnlock()
+	snapshot := make(map[string]interface{}, len(gk.globalData))
+	for k, v := range gk.globalData {
+		snapshot[k] = v
+	}
+	return snapshot
 }
 
 func (gk *GUIKit) RegisterComponent(comp LiveComponent) {
@@ -255,7 +283,11 @@ func (gk *GUIKit) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	gk.clients[conn] = true
 	gk.clientsMu.Unlock()
 
+	// Channel to signal the ping goroutine to terminate
+	done := make(chan struct{})
+
 	defer func() {
+		close(done)
 		gk.clientsMu.Lock()
 		delete(gk.clients, conn)
 		gk.clientsMu.Unlock()
@@ -275,8 +307,13 @@ func (gk *GUIKit) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		ticker := time.NewTicker(pingPeriod)
 		defer ticker.Stop()
-		for range ticker.C {
-			if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+		for {
+			select {
+			case <-ticker.C:
+				if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+					return
+				}
+			case <-done:
 				return
 			}
 		}
@@ -297,16 +334,23 @@ func (gk *GUIKit) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		method := reflect.ValueOf(comp).MethodByName(msg.Event)
-		if method.IsValid() {
+		// Ensure method execution doesn't panic on invalid reflection calls
+		val := reflect.ValueOf(comp)
+		method := val.MethodByName(msg.Event)
+		
+		if method.IsValid() && method.Kind() == reflect.Func {
 			if method.Type().NumIn() == 1 && method.Type().In(0) == reflect.TypeOf(msg.Data) {
 				method.Call([]reflect.Value{reflect.ValueOf(msg.Data)})
-			} else {
+			} else if method.Type().NumIn() == 0 {
 				method.Call(nil)
+			} else {
+				log.Printf("Invalid signature for live event: %s on component %s", msg.Event, msg.CompID)
+				continue
 			}
 
 			rawGML := comp.Render()
-			htmlOut := gk.compileGMLString(rawGML, gk.GlobalData)
+			// Use the thread-safe global state snapshot
+			htmlOut := gk.compileGMLString(rawGML, gk.GetGlobalMap())
 
 			patch := OutgoingPatch{
 				CompID: msg.CompID,
@@ -395,7 +439,9 @@ func (gk *GUIKit) Render(c *Context, viewPath string) {
 		gk.cacheMu.Unlock()
 	}
 
-	for k, v := range gk.GlobalData {
+	// Safely merge global state
+	globalState := gk.GetGlobalMap()
+	for k, v := range globalState {
 		c.Data[k] = v
 	}
 	c.Data["CspNonce"] = c.CspNonce
