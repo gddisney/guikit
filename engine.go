@@ -388,6 +388,9 @@ func (gk *GUIKit) Broadcast(event string, payload interface{}) {
 // ==========================================
 
 func (gk *GUIKit) Render(c *Context, viewPath string) {
+	if c.Data == nil {
+        c.Data = make(map[string]interface{})
+    }
 	gk.cacheMu.RLock()
 	tmpl, cached := gk.templateCache[viewPath]
 	gk.cacheMu.RUnlock()
