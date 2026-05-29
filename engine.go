@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
 	"html/template"
@@ -44,18 +45,23 @@ var (
 	rxH1      = regexp.MustCompile(`(?m)^# (.*)$`)
 	rxBold    = regexp.MustCompile(`\*\*(.*?)\*\*`)
 	rxItalic  = regexp.MustCompile(`\*(.*?)\*`)
-	rxMention = regexp.MustCompile(`@([a-zA-Z0-9_]+)`)
-	rxHashtag = regexp.MustCompile(`#([a-zA-Z0-9_]+)`)
+	rxMention = regexp.MustCompile(`@([a-zA-Z0-9_][a-zA-Z0-9_-]*)`)
+	rxHashtag = regexp.MustCompile(`\B#([a-zA-Z0-9_]+)`)
 )
 
 type contextKey string
 const nonceKey contextKey = "csp-nonce"
 
+type SessionRecord struct {
+	ID         uint64 `json:"id"`
+	SessionKey string `json:"session_key"`
+	Value      string `json:"value"`
+}
+
 // ==========================================
 // 2. Types & Interfaces
 // ==========================================
 
-// ThreadSafeConn wraps a websocket connection to ensure synchronized write access.
 type ThreadSafeConn struct {
 	conn *websocket.Conn
 	mu   sync.Mutex
@@ -78,10 +84,10 @@ func (s *ThreadSafeConn) Close() error {
 }
 
 type Context struct {
-	W         http.ResponseWriter
-	R         *http.Request
-	Data      map[string]interface{}
-	CspNonce  string
+	W        http.ResponseWriter
+	R        *http.Request
+	Data     map[string]interface{}
+	CspNonce string
 }
 
 type LiveComponent interface {
@@ -101,10 +107,9 @@ type OutgoingPatch struct {
 }
 
 type GUIKit struct {
-	DB          *ultimate_db.DB
-	BP          *ultimate_db.BufferPool
-	Mux         *http.ServeMux
-	SessionPage ultimate_db.PageID
+	DB  *ultimate_db.DB
+	ORM *ultimate_db.ORM
+	Mux *http.ServeMux
 
 	globalData   map[string]interface{}
 	globalDataMu sync.RWMutex
@@ -124,26 +129,9 @@ type GUIKit struct {
 // 3. Engine Initialization & Routing
 // ==========================================
 
-func New(dbPath, walPath string) (*GUIKit, error) {
-	dm, err := ultimate_db.NewDiskManager(dbPath)
-	if err != nil {
-		return nil, err
-	}
-	bp := ultimate_db.NewBufferPool(dm, 1024)
-
-	wal, err := ultimate_db.NewBatchingWAL(walPath)
-	if err != nil {
-		return nil, err
-	}
-
-	db := ultimate_db.NewDB(bp, wal)
-	ultimate_db.RecoverDB(walPath, db)
-
-	_, err = bp.FetchPage(0)
-	if err != nil {
-		bp.NewPage()
-	} else {
-		bp.UnpinPage(0, false)
+func New(db *ultimate_db.DB, orm *ultimate_db.ORM) (*GUIKit, error) {
+	if db == nil || orm == nil {
+		return nil, errors.New("cannot initialize GUIKit without active DB and ORM subsystems")
 	}
 
 	if AppFS == nil {
@@ -152,10 +140,9 @@ func New(dbPath, walPath string) (*GUIKit, error) {
 
 	gk := &GUIKit{
 		DB:            db,
-		BP:            bp,
+		ORM:           orm,
 		Mux:           http.NewServeMux(),
 		globalData:    make(map[string]interface{}),
-		SessionPage:   0,
 		components:    make(map[string]LiveComponent),
 		clients:       make(map[*ThreadSafeConn]bool),
 		templateCache: make(map[string]*template.Template),
@@ -172,14 +159,12 @@ func New(dbPath, walPath string) (*GUIKit, error) {
 	return gk, nil
 }
 
-// SetGlobal safely writes to the global state map
 func (gk *GUIKit) SetGlobal(key string, value interface{}) {
 	gk.globalDataMu.Lock()
 	defer gk.globalDataMu.Unlock()
 	gk.globalData[key] = value
 }
 
-// GetGlobal safely reads from the global state map
 func (gk *GUIKit) GetGlobal(key string) (interface{}, bool) {
 	gk.globalDataMu.RLock()
 	defer gk.globalDataMu.RUnlock()
@@ -187,7 +172,6 @@ func (gk *GUIKit) GetGlobal(key string) (interface{}, bool) {
 	return val, ok
 }
 
-// GetGlobalMap returns a snapshot of the global state for rendering
 func (gk *GUIKit) GetGlobalMap() map[string]interface{} {
 	gk.globalDataMu.RLock()
 	defer gk.globalDataMu.RUnlock()
@@ -247,27 +231,28 @@ func (gk *GUIKit) GetNonce(r *http.Request) string {
 }
 
 // ==========================================
-// 4. Session Management
+// 4. Session Management Layer
 // ==========================================
 
-func (gk *GUIKit) SetSession(key string, value string) error {
-	return gk.DB.Write(gk.SessionPage, gk.DB.BeginTxn(), []byte(key), []byte(value), 0)
+func (gk *GUIKit) SetSession(id uint64, key string, value string) error {
+	rec := SessionRecord{
+		ID:         id,
+		SessionKey: key,
+		Value:      value,
+	}
+	return gk.ORM.Insert(rec)
 }
 
-func (gk *GUIKit) SetSessionTTL(key string, value string, ttl time.Duration) error {
-	return gk.DB.Write(gk.SessionPage, gk.DB.BeginTxn(), []byte(key), []byte(value), ttl)
-}
-
-func (gk *GUIKit) GetSession(key string) string {
-	val, err := gk.DB.Read(gk.SessionPage, gk.DB.BeginTxn(), []byte(key))
-	if err != nil {
+func (gk *GUIKit) GetSession(id uint64) string {
+	var rec SessionRecord
+	if err := gk.ORM.Find(id, &rec); err != nil {
 		return ""
 	}
-	return string(val)
+	return rec.Value
 }
 
 // ==========================================
-// 5. WebSocket & Reflection Router
+// 5. WebSocket Router
 // ==========================================
 
 func (gk *GUIKit) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
@@ -283,7 +268,6 @@ func (gk *GUIKit) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	gk.clients[conn] = true
 	gk.clientsMu.Unlock()
 
-	// Channel to signal the ping goroutine to terminate
 	done := make(chan struct{})
 
 	defer func() {
@@ -291,7 +275,7 @@ func (gk *GUIKit) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		gk.clientsMu.Lock()
 		delete(gk.clients, conn)
 		gk.clientsMu.Unlock()
-		conn.Close()
+		_ = conn.Close()
 	}()
 
 	const pongWait = 60 * time.Second
@@ -334,7 +318,6 @@ func (gk *GUIKit) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		// Ensure method execution doesn't panic on invalid reflection calls
 		val := reflect.ValueOf(comp)
 		method := val.MethodByName(msg.Event)
 		
@@ -344,12 +327,10 @@ func (gk *GUIKit) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 			} else if method.Type().NumIn() == 0 {
 				method.Call(nil)
 			} else {
-				log.Printf("Invalid signature for live event: %s on component %s", msg.Event, msg.CompID)
 				continue
 			}
 
 			rawGML := comp.Render()
-			// Use the thread-safe global state snapshot
 			htmlOut := gk.compileGMLString(rawGML, gk.GetGlobalMap())
 
 			patch := OutgoingPatch{
@@ -389,8 +370,8 @@ func (gk *GUIKit) Broadcast(event string, payload interface{}) {
 
 func (gk *GUIKit) Render(c *Context, viewPath string) {
 	if c.Data == nil {
-        c.Data = make(map[string]interface{})
-    }
+		c.Data = make(map[string]interface{})
+	}
 	gk.cacheMu.RLock()
 	tmpl, cached := gk.templateCache[viewPath]
 	gk.cacheMu.RUnlock()
@@ -442,7 +423,6 @@ func (gk *GUIKit) Render(c *Context, viewPath string) {
 		gk.cacheMu.Unlock()
 	}
 
-	// Safely merge global state
 	globalState := gk.GetGlobalMap()
 	for k, v := range globalState {
 		c.Data[k] = v
