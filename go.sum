@@ -1,5 +1,3 @@
-github.com/gddisney/ultimate_db v1.0.5 h1:rzpcqc8Qk8JzcTIUM2AjZ+NQwPRZz7DvZ55g0C48OE4=
-github.com/gddisney/ultimate_db v1.0.5/go.mod h1:yDGa+1Vtx/uJhQJ68AnbsONu1mpP4nXe8DERJdTGNFA=
 github.com/gddisney/ultimate_db v1.1.0 h1:mwaxINpCqjxnhj8MpLcrKacCh6al+evoBof/hcMhJwA=
 github.com/gddisney/ultimate_db v1.1.0/go.mod h1:yDGa+1Vtx/uJhQJ68AnbsONu1mpP4nXe8DERJdTGNFA=
 github.com/gorilla/websocket v1.5.3 h1:saDtZ6Pbx/0u+bgYQ3q96pZgCzfhKXGPqt7kZ72aNNg=
