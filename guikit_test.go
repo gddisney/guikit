@@ -8,7 +8,7 @@ import (
 "strings"
 "testing"
 
-"github.com/gddisney/ultimate_db"
+"github.com/0TrustCloud/ultimate_db"
 )
 
 func setupMockDatabase(t *testing.T) (*ultimate_db.DB, *ultimate_db.ORM, func()) {
