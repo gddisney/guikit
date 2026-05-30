@@ -1,0 +1,4 @@
+github.com/0TrustCloud/ultimate_db v1.2.1 h1:OgDVKFlFA8HtYvgvzDWAAUjin/hRq/T7V9qvK+T7vHI=
+github.com/0TrustCloud/ultimate_db v1.2.1/go.mod h1:zts/iJNVBJeAeIurLSuN+RYLS1Rc5d1qWRV0g8YD420=
+github.com/gorilla/websocket v1.5.3 h1:saDtZ6Pbx/0u+bgYQ3q96pZgCzfhKXGPqt7kZ72aNNg=
+github.com/gorilla/websocket v1.5.3/go.mod h1:YR8l580nyteQvAITg2hZ9XVh4b55+EU/adAjf1fMHhE=
